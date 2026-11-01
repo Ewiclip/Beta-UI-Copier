@@ -1,0 +1,38 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build, test, and package
+        shell: powershell
+        run: .\build.ps1 -Test -Package
+
+      - name: Save portable application
+        uses: actions/upload-artifact@v7
+        with:
+          name: EverQuest-Beta-UI-Copier-Windows
+          path: dist/EverQuest-Beta-UI-Copier.exe
+          if-no-files-found: error
+
+      - name: Save test previews
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Windows-form-previews
+          path: test-work/copier-preview*.png
+          if-no-files-found: ignore

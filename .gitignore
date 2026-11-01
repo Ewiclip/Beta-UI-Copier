@@ -1,0 +1,11 @@
+# Generated builds, packages, and test fixtures
+/dist/
+/test-work/
+
+# Local editor and operating-system files
+/.vs/
+/.vscode/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
