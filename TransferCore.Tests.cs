@@ -41,7 +41,15 @@ namespace EverQuestBetaUiCopier
                 SourceFailureLeavesBetaUntouched,
                 FailedOverwriteRollsBackPriorFiles,
                 RejectsDirectoryAtDestination,
-                RejectsHardLinkedDestinationWithoutChangingLive
+                RejectsHardLinkedDestinationWithoutChangingLive,
+                CopiesMapsAlongsideUiAndKeepsUnrelatedMaps,
+                CopiesMapsIntoNewFolderAndReportsCounts,
+                NoMapsLeavesMapsFolderUntouched,
+                RejectsInvalidOrDuplicateMapsBeforeWrites,
+                FailedMapOverwriteRollsBackUiAndMaps,
+                RejectsBlockedMapsFolderBeforeWrites,
+                FailedUiOverwriteRemovesNewMapsFolder,
+                SourceFailureDoesNotCreateMapsFolder
             };
             int failures = 0;
             int skipped = 0;
@@ -272,6 +280,153 @@ namespace EverQuestBetaUiCopier
             Put(f.Live, "eqgame.exe", "fixture only");
             Put(f.Beta, "eqgame.exe", "fixture only");
             return f;
+        }
+
+        private static void CopiesMapsAlongsideUiAndKeepsUnrelatedMaps()
+        {
+            Fixture f = NewFixture();
+            Put(f.Live, "UI_Alpha_xegony_SHM.ini", "new UI");
+            Put(f.Live, "Alpha_xegony_SHM.ini", "new character");
+            Put(f.Beta, "UI_Alpha_beta_SHM.ini", "old UI");
+            string mapFolder = Path.Combine(f.Beta, "maps");
+            Directory.CreateDirectory(mapFolder);
+            Put(mapFolder, "zone.txt", "old zone");
+            Put(mapFolder, "unrelated.txt", "untouched map");
+            string customMaps = Path.Combine(mapFolder, "custom");
+            Directory.CreateDirectory(customMaps);
+            Put(customMaps, "zone.txt", "custom map");
+            byte[] downloaded = new byte[] { 239, 187, 191, 0, 255, 76, 13, 10, 200 };
+            var maps = new[] { new MapFile("zone.txt", downloaded), new MapFile("zone_1.txt", new byte[0]) };
+
+            TransferResult result = TransferCore.Copy(f.Live, f.Beta, TransferCore.Scan(f.Live), maps);
+
+            Equal(4, result.CopiedFiles, "Combined total");
+            Equal(2, result.CopiedUiFiles, "UI count excludes maps");
+            Equal(2, result.CopiedMapFiles, "Map count");
+            Equal(2, result.ReplacedFiles, "One UI and one map overwritten");
+            Equal("new UI", File.ReadAllText(Path.Combine(f.Beta, "UI_Alpha_beta_SHM.ini")), "UI stays in game root");
+            Equal("new character", File.ReadAllText(Path.Combine(f.Beta, "Alpha_beta_SHM.ini")), "Character stays in game root");
+            Bytes(downloaded, Path.Combine(mapFolder, "zone.txt"), "Map bytes copied unchanged");
+            Bytes(new byte[0], Path.Combine(mapFolder, "zone_1.txt"), "Empty map layer preserved");
+            Equal("old zone", File.ReadAllText(Path.Combine(result.BackupDirectory, "originals", "maps", "zone.txt")), "Map backup preserves maps subfolder");
+            Equal("old UI", File.ReadAllText(Path.Combine(result.BackupDirectory, "originals", "UI_Alpha_beta_SHM.ini")), "UI backup stays in originals root");
+            Equal("untouched map", File.ReadAllText(Path.Combine(mapFolder, "unrelated.txt")), "Unrelated map retained");
+            Equal("custom map", File.ReadAllText(Path.Combine(customMaps, "zone.txt")), "Custom map folder retained");
+            Assert(!File.Exists(Path.Combine(f.Beta, "zone.txt")), "Map never written to game root");
+            Equal("new UI", File.ReadAllText(Path.Combine(f.Live, "UI_Alpha_xegony_SHM.ini")), "Live remains unchanged");
+            string manifest = File.ReadAllText(Path.Combine(result.BackupDirectory, "transfer.txt"));
+            Assert(manifest.Contains(Path.Combine("maps", "zone.txt")), "Manifest lists relative map paths");
+            Assert(manifest.Contains(MapDownloader.ArchiveUrl), "Manifest records download source");
+            Assert(manifest.Contains("preserving subfolders"), "Manifest explains map restoration");
+        }
+
+        private static void CopiesMapsIntoNewFolderAndReportsCounts()
+        {
+            Fixture f = NewFixture();
+            Put(f.Live, "UI_Alpha_xegony_SHM.ini", "new UI");
+            byte[] downloaded = Encoding.UTF8.GetBytes("L 1, 2, 3, 4, 5, 6, 0, 0, 0\n");
+            TransferResult result = TransferCore.Copy(f.Live, f.Beta, TransferCore.Scan(f.Live), new[] { new MapFile("newzone.txt", downloaded) });
+            Equal(2, result.CopiedFiles, "UI and map both counted");
+            Equal(1, result.CopiedUiFiles, "One UI file");
+            Equal(1, result.CopiedMapFiles, "One map file");
+            Equal(0, result.ReplacedFiles, "New targets need no backups");
+            Bytes(downloaded, Path.Combine(f.Beta, "maps", "newzone.txt"), "Maps folder created and populated");
+        }
+
+        private static void NoMapsLeavesMapsFolderUntouched()
+        {
+            Fixture f = NewFixture();
+            Put(f.Live, "UI_Alpha_xegony_SHM.ini", "UI");
+            TransferResult result = TransferCore.Copy(f.Live, f.Beta, TransferCore.Scan(f.Live));
+            Assert(!Directory.Exists(Path.Combine(f.Beta, "maps")), "No maps directory created with feature off");
+            Equal(1, result.CopiedUiFiles, "Legacy copy returns UI count");
+            Equal(0, result.CopiedMapFiles, "Legacy copy has no maps");
+            Put(f.Beta, "maps", "unrelated file named maps");
+            TransferCore.Copy(f.Live, f.Beta, TransferCore.Scan(f.Live), new MapFile[0]);
+            Equal("unrelated file named maps", File.ReadAllText(Path.Combine(f.Beta, "maps")), "Feature off does not inspect or alter maps path");
+        }
+
+        private static void RejectsInvalidOrDuplicateMapsBeforeWrites()
+        {
+            Fixture f = NewFixture();
+            Put(f.Live, "UI_Alpha_xegony_SHM.ini", "UI");
+            var profiles = TransferCore.Scan(f.Live);
+            var tampered = new MapFile("safe.txt", new byte[0]);
+            typeof(MapFile).GetProperty("Name").SetValue(tampered, "../escaped.txt", null);
+            Throws(delegate { TransferCore.Copy(f.Live, f.Beta, profiles, new[] { tampered }); });
+            Throws(delegate { TransferCore.Copy(f.Live, f.Beta, profiles, new MapFile[] { null }); });
+            Throws(delegate { TransferCore.Copy(f.Live, f.Beta, profiles, null); });
+            Exception duplicate = Throws(delegate
+            {
+                TransferCore.Copy(f.Live, f.Beta, profiles, new[] { new MapFile("zone.txt", new byte[0]), new MapFile("ZONE.TXT", new byte[0]) });
+            });
+            Assert(duplicate.Message.Contains("More than one downloaded map"), "Duplicate explains failure");
+            Assert(!Directory.Exists(Path.Combine(f.Beta, "BetaUI-Backups")), "Invalid maps rejected before backup writes");
+            Assert(!Directory.Exists(Path.Combine(f.Beta, "maps")), "Invalid maps cannot create target folder");
+            Assert(!File.Exists(Path.Combine(f.Beta, "UI_Alpha_beta_SHM.ini")), "Invalid maps cannot partially copy UI");
+        }
+
+        private static void FailedMapOverwriteRollsBackUiAndMaps()
+        {
+            Fixture f = NewFixture();
+            Put(f.Live, "UI_Alpha_xegony_SHM.ini", "new UI");
+            Put(f.Live, "Alpha_xegony_SHM.ini", "new character");
+            Put(f.Beta, "UI_Alpha_beta_SHM.ini", "old UI");
+            string mapFolder = Path.Combine(f.Beta, "maps");
+            Directory.CreateDirectory(mapFolder);
+            Put(mapFolder, "first.txt", "old first map");
+            Put(mapFolder, "last.txt", "old last map");
+            string lockedMap = Path.Combine(mapFolder, "last.txt");
+            File.SetAttributes(lockedMap, FileAttributes.ReadOnly);
+            var maps = new[]
+            {
+                new MapFile("first.txt", Encoding.UTF8.GetBytes("new first map")),
+                new MapFile("new.txt", Encoding.UTF8.GetBytes("newly added map")),
+                new MapFile("last.txt", Encoding.UTF8.GetBytes("new last map"))
+            };
+            Exception failure = Throws(delegate { TransferCore.Copy(f.Live, f.Beta, TransferCore.Scan(f.Live), maps); });
+            Assert(failure.Message.Contains("rolled back"), "Combined rollback reported");
+            Equal("old UI", File.ReadAllText(Path.Combine(f.Beta, "UI_Alpha_beta_SHM.ini")), "UI overwrite restored after map failure");
+            Assert(!File.Exists(Path.Combine(f.Beta, "Alpha_beta_SHM.ini")), "New character removed after map failure");
+            Equal("old first map", File.ReadAllText(Path.Combine(mapFolder, "first.txt")), "Earlier overwritten map restored");
+            Assert(!File.Exists(Path.Combine(mapFolder, "new.txt")), "Earlier new map removed");
+            Equal("old last map", File.ReadAllText(lockedMap), "Failing map untouched");
+            Assert((File.GetAttributes(lockedMap) & FileAttributes.ReadOnly) != 0, "Map read-only attribute retained");
+            string backup = Directory.GetDirectories(Path.Combine(f.Beta, "BetaUI-Backups"))[0];
+            Equal("old first map", File.ReadAllText(Path.Combine(backup, "originals", "maps", "first.txt")), "Map originals remain available after failure");
+        }
+
+        private static void RejectsBlockedMapsFolderBeforeWrites()
+        {
+            Fixture f = NewFixture();
+            Put(f.Live, "UI_Alpha_xegony_SHM.ini", "UI");
+            Put(f.Beta, "maps", "occupied");
+            Exception failure = Throws(delegate { TransferCore.Copy(f.Live, f.Beta, TransferCore.Scan(f.Live), new[] { new MapFile("zone.txt", new byte[0]) }); });
+            Assert(failure.Message.Contains("Beta maps folder"), "Blocked maps directory explained");
+            Assert(!Directory.Exists(Path.Combine(f.Beta, "BetaUI-Backups")), "Blocked maps path rejected before any writes");
+            Equal("occupied", File.ReadAllText(Path.Combine(f.Beta, "maps")), "Blocking file left untouched");
+        }
+
+        private static void FailedUiOverwriteRemovesNewMapsFolder()
+        {
+            Fixture f = NewFixture();
+            Put(f.Live, "UI_Alpha_xegony_SHM.ini", "new UI");
+            Put(f.Beta, "UI_Alpha_beta_SHM.ini", "old UI");
+            string target = Path.Combine(f.Beta, "UI_Alpha_beta_SHM.ini");
+            File.SetAttributes(target, FileAttributes.ReadOnly);
+            Throws(delegate { TransferCore.Copy(f.Live, f.Beta, TransferCore.Scan(f.Live), new[] { new MapFile("zone.txt", new byte[0]) }); });
+            Equal("old UI", File.ReadAllText(target), "Existing UI unchanged");
+            Assert(!Directory.Exists(Path.Combine(f.Beta, "maps")), "New empty maps directory removed on rollback");
+        }
+
+        private static void SourceFailureDoesNotCreateMapsFolder()
+        {
+            Fixture f = NewFixture();
+            Put(f.Live, "UI_Alpha_xegony_SHM.ini", "new UI");
+            string source = Path.Combine(f.Live, "UI_Alpha_xegony_SHM.ini");
+            using (var locked = new FileStream(source, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                Throws(delegate { TransferCore.Copy(f.Live, f.Beta, TransferCore.Scan(f.Live), new[] { new MapFile("zone.txt", new byte[0]) }); });
+            Assert(!Directory.Exists(Path.Combine(f.Beta, "maps")), "Map directory is created only after every source and backup is ready");
         }
 
         private static void Put(string directory, string name, string contents)

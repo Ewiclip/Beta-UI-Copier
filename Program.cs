@@ -10,8 +10,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("EverQuest Beta UI Copier")]
 [assembly: AssemblyDescription("Copy Live EverQuest character UI settings to Beta.")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace EverQuestBetaUiCopier
 {
@@ -46,6 +46,7 @@ namespace EverQuestBetaUiCopier
         private readonly Button backupButton = new Button();
         private readonly Button selectAll = new Button();
         private readonly Button selectNone = new Button();
+        private readonly CheckBox includeMaps = new CheckBox();
         private List<Profile> profiles = new List<Profile>();
         private string liveDirectory;
         private string betaDirectory;
@@ -60,8 +61,8 @@ namespace EverQuestBetaUiCopier
             Font = new Font("Segoe UI", 10F);
             BackColor = Color.FromArgb(246, 248, 251);
             ForeColor = ink;
-            ClientSize = new Size(880, 700);
-            MinimumSize = new Size(800, 690);
+            ClientSize = new Size(880, 732);
+            MinimumSize = new Size(800, 722);
             StartPosition = FormStartPosition.CenterScreen;
             AutoScaleDimensions = new SizeF(96F, 96F);
             AutoScaleMode = AutoScaleMode.Dpi;
@@ -72,13 +73,14 @@ namespace EverQuestBetaUiCopier
             layout.Dock = DockStyle.Fill;
             layout.Padding = new Padding(24, 18, 24, 18);
             layout.ColumnCount = 1;
-            layout.RowCount = 9;
+            layout.RowCount = 10;
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 83));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 65));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 65));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 53));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
@@ -115,8 +117,18 @@ namespace EverQuestBetaUiCopier
             summary.Margin = new Padding(0);
             layout.Controls.Add(summary, 0, 5);
 
+            FlowLayoutPanel mapOptions = new FlowLayoutPanel { Dock = DockStyle.Fill, Margin = new Padding(0), WrapContents = false };
+            includeMaps.Text = "Include New Maps";
+            includeMaps.AutoSize = true;
+            includeMaps.Checked = true;
+            includeMaps.Margin = new Padding(0, 3, 14, 0);
+            includeMaps.CheckedChanged += delegate { UpdateSummary(); };
+            mapOptions.Controls.Add(includeMaps);
+            mapOptions.Controls.Add(new Label { Text = "Downloads to Beta's maps folder; replaces matching files.", AutoSize = true, ForeColor = muted, Margin = new Padding(0, 5, 0, 0) });
+            layout.Controls.Add(mapOptions, 0, 6);
+
             Label help = new Label { Dock = DockStyle.Fill, ForeColor = muted, Margin = new Padding(0), Text = "Copies matching UI + character INI files and changes the server in each filename to beta.\nExisting Beta files are backed up automatically. Custom UI skin folders are not included." };
-            layout.Controls.Add(help, 0, 6);
+            layout.Controls.Add(help, 0, 7);
 
             TableLayoutPanel actions = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Margin = new Padding(0) };
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
@@ -135,12 +147,12 @@ namespace EverQuestBetaUiCopier
             copyButton.FlatAppearance.BorderSize = 0;
             copyButton.Click += CopySelected;
             actions.Controls.Add(copyButton, 2, 0);
-            layout.Controls.Add(actions, 0, 7);
+            layout.Controls.Add(actions, 0, 8);
 
             result.Dock = DockStyle.Fill;
             result.TextAlign = ContentAlignment.MiddleLeft;
             result.Margin = new Padding(0);
-            layout.Controls.Add(result, 0, 8);
+            layout.Controls.Add(result, 0, 9);
             FormClosing += delegate(object sender, FormClosingEventArgs e) { if (copying) e.Cancel = true; };
             UpdateSummary();
             ResumeLayout(true);
@@ -316,7 +328,7 @@ namespace EverQuestBetaUiCopier
             bool conflict = selected.GroupBy(p => p.DestinationUiName, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() > 1);
             copyButton.Enabled = liveDirectory != null && betaDirectory != null && files > 0 && !conflict;
             selectAll.Enabled = selectNone.Enabled = profiles.Count > 0;
-            copyButton.Text = files == 0 ? "Copy to Beta" : "Copy " + files + " files to Beta";
+            copyButton.Text = files == 0 ? "Copy to Beta" : "Copy " + files + " files" + (includeMaps.Checked ? " + maps" : "") + " to Beta";
             summary.ForeColor = conflict ? Color.FromArgb(160, 62, 23) : muted;
             if (liveDirectory == null) summary.Text = "Start by choosing your Live EverQuest desktop shortcut or launcher.";
             else if (profiles.Count == 0) summary.Text = "No UI_<character>_<server>_<class>.ini files found in this Live folder.";
@@ -326,8 +338,8 @@ namespace EverQuestBetaUiCopier
                 int existing = betaDirectory == null ? 0 : selected.Sum(p => (File.Exists(Path.Combine(betaDirectory, p.DestinationUiName)) ? 1 : 0) +
                     (p.CompanionSourcePath != null && File.Exists(Path.Combine(betaDirectory, p.DestinationCompanionName)) ? 1 : 0));
                 int missing = selected.Count(p => p.CompanionSourcePath == null);
-                summary.Text = selected.Count + " of " + profiles.Count + " profiles selected  |  " + files + " files" +
-                    (betaDirectory == null ? "  |  Choose your Beta launcher next." : "  |  " + existing + " existing Beta files will be backed up.") +
+                summary.Text = selected.Count + " of " + profiles.Count + " profiles selected  |  " + files + " UI files" +
+                    (betaDirectory == null ? "  |  Choose your Beta launcher next." : "  |  " + existing + " existing UI files will be backed up.") +
                     (missing == 0 ? "" : "\n" + missing + " profiles have no matching character INI; their UI files will still be copied.");
             }
         }
@@ -342,17 +354,26 @@ namespace EverQuestBetaUiCopier
             catch (Exception ex) { ShowError(ex); return; }
 
             List<Profile> selected = SelectedProfiles();
+            bool downloadMaps = includeMaps.Checked;
             copying = true;
-            liveButton.Enabled = betaButton.Enabled = profilesGrid.Enabled = selectAll.Enabled = selectNone.Enabled = copyButton.Enabled = backupButton.Enabled = false;
+            liveButton.Enabled = betaButton.Enabled = profilesGrid.Enabled = selectAll.Enabled = selectNone.Enabled = copyButton.Enabled = backupButton.Enabled = includeMaps.Enabled = false;
             copyButton.Text = "Copying...";
             result.ForeColor = muted;
-            result.Text = "Backing up existing Beta files and copying your selected settings...";
-            BackgroundWorker worker = new BackgroundWorker();
-            worker.DoWork += delegate(object workSender, DoWorkEventArgs work) { work.Result = TransferCore.Copy(liveDirectory, betaDirectory, selected); };
+            result.Text = downloadMaps ? "Downloading the latest maps from GitHub..." : "Backing up existing Beta files and copying your selected settings...";
+            BackgroundWorker worker = new BackgroundWorker { WorkerReportsProgress = true };
+            worker.ProgressChanged += delegate(object progressSender, ProgressChangedEventArgs progress) { result.Text = (string)progress.UserState; };
+            worker.DoWork += delegate(object workSender, DoWorkEventArgs work)
+            {
+                List<MapFile> maps = downloadMaps
+                    ? MapDownloader.Download(delegate(string message) { worker.ReportProgress(0, message); })
+                    : new List<MapFile>();
+                worker.ReportProgress(0, "Backing up existing Beta files and copying your selected settings" + (downloadMaps ? " and maps..." : "..."));
+                work.Result = TransferCore.Copy(liveDirectory, betaDirectory, selected, maps);
+            };
             worker.RunWorkerCompleted += delegate(object completedSender, RunWorkerCompletedEventArgs completed)
             {
                 copying = false;
-                liveButton.Enabled = betaButton.Enabled = profilesGrid.Enabled = true;
+                liveButton.Enabled = betaButton.Enabled = profilesGrid.Enabled = includeMaps.Enabled = true;
                 UpdateSummary();
                 if (completed.Error != null)
                 {
@@ -365,7 +386,9 @@ namespace EverQuestBetaUiCopier
                     TransferResult transfer = (TransferResult)completed.Result;
                     backupDirectory = transfer.BackupDirectory;
                     result.ForeColor = Color.FromArgb(23, 111, 67);
-                    result.Text = "Done! Copied " + transfer.CopiedFiles + " files to Beta. " + transfer.ReplacedFiles + " previous files backed up.\nYou can close this window and start Beta.";
+                    result.Text = "Done! Copied " + transfer.CopiedUiFiles + " UI files" +
+                        (transfer.CopiedMapFiles == 0 ? "" : " and " + transfer.CopiedMapFiles + " maps") +
+                        " to Beta. " + transfer.ReplacedFiles + " previous files backed up.\nYou can close this window and start Beta.";
                 }
                 backupButton.Enabled = backupDirectory != null && Directory.Exists(backupDirectory);
                 worker.Dispose();

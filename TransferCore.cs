@@ -24,6 +24,8 @@ namespace EverQuestBetaUiCopier
     public sealed class TransferResult
     {
         public int CopiedFiles { get; internal set; }
+        public int CopiedUiFiles { get; internal set; }
+        public int CopiedMapFiles { get; internal set; }
         public int ReplacedFiles { get; internal set; }
         public string BackupDirectory { get; internal set; }
     }
@@ -83,6 +85,11 @@ namespace EverQuestBetaUiCopier
 
         public static TransferResult Copy(string liveDirectory, string betaDirectory, IEnumerable<Profile> selectedProfiles)
         {
+            return Copy(liveDirectory, betaDirectory, selectedProfiles, new MapFile[0]);
+        }
+
+        public static TransferResult Copy(string liveDirectory, string betaDirectory, IEnumerable<Profile> selectedProfiles, IEnumerable<MapFile> maps)
+        {
             ValidateFolders(liveDirectory, betaDirectory);
             string live = Path.GetFullPath(liveDirectory);
             string beta = Path.GetFullPath(betaDirectory);
@@ -107,10 +114,31 @@ namespace EverQuestBetaUiCopier
                     AddItem(plan, destinations, beta, profile.CompanionSourcePath, profile.DestinationCompanionName);
             }
 
+            if (maps == null)
+                throw new ArgumentException("The downloaded maps are missing. Retry the download or uncheck Include New Maps.");
+            foreach (MapFile map in maps)
+            {
+                if (map == null || map.Contents == null)
+                    throw new ArgumentException("A downloaded map is missing its contents. Retry the download.");
+                MapFile.ValidateName(map.Name);
+                string relativeTarget = Path.Combine("maps", map.Name);
+                if (!destinations.Add(relativeTarget))
+                    throw new InvalidOperationException("More than one downloaded map has the filename " + map.Name + ". No files were copied.");
+                plan.Add(new CopyItem
+                {
+                    RelativeTarget = relativeTarget,
+                    Target = Path.Combine(beta, relativeTarget),
+                    DownloadedContents = (byte[])map.Contents.Clone()
+                });
+            }
+            string mapsDirectory = Path.Combine(beta, "maps");
+            bool hasMaps = plan.Any(p => p.IsMap);
+            if (hasMaps) ValidateMapsDirectory(mapsDirectory);
+
             // Reject unsafe targets before creating a backup directory or writing any data.
             foreach (CopyItem item in plan)
             {
-                RequireRegularFile(item.Source, "Live source");
+                if (!item.IsMap) RequireRegularFile(item.Source, "Live source");
                 ValidateDestination(item.Target);
             }
             string backupsRoot = Path.Combine(beta, "BetaUI-Backups");
@@ -129,27 +157,45 @@ namespace EverQuestBetaUiCopier
             Directory.CreateDirectory(originals);
             string manifest = Path.Combine(run, "transfer.txt");
             var attempted = new List<CopyItem>();
+            bool createdMapsDirectory = false;
             try
             {
                 // All source reads and backup copies must succeed before changing a Beta file.
                 foreach (CopyItem item in plan)
                 {
-                    item.Staged = Path.Combine(staging, Path.GetFileName(item.Target));
-                    File.Copy(item.Source, item.Staged, false);
+                    item.Staged = Path.Combine(staging, item.RelativeTarget);
+                    Directory.CreateDirectory(Path.GetDirectoryName(item.Staged));
+                    if (item.IsMap)
+                        File.WriteAllBytes(item.Staged, item.DownloadedContents);
+                    else
+                        File.Copy(item.Source, item.Staged, false);
                     File.SetAttributes(item.Staged, FileAttributes.Normal);
+                    if (item.IsMap) ValidateMapsDirectory(mapsDirectory);
                     ValidateDestination(item.Target);
                     item.Existed = File.Exists(item.Target);
                     if (item.Existed)
                     {
                         item.OriginalAttributes = File.GetAttributes(item.Target);
                         item.OriginalWriteTimeUtc = File.GetLastWriteTimeUtc(item.Target);
-                        item.Backup = Path.Combine(originals, Path.GetFileName(item.Target));
+                        item.Backup = Path.Combine(originals, item.RelativeTarget);
+                        Directory.CreateDirectory(Path.GetDirectoryName(item.Backup));
                         File.Copy(item.Target, item.Backup, false);
                     }
                 }
                 WriteManifest(manifest, "PREPARED: all source files staged and existing Beta files backed up.", live, beta, plan);
+                if (hasMaps)
+                {
+                    ValidateMapsDirectory(mapsDirectory);
+                    if (!Directory.Exists(mapsDirectory))
+                    {
+                        Directory.CreateDirectory(mapsDirectory);
+                        createdMapsDirectory = true;
+                    }
+                    ValidateMapsDirectory(mapsDirectory);
+                }
                 foreach (CopyItem item in plan)
                 {
+                    if (item.IsMap) ValidateMapsDirectory(mapsDirectory);
                     ValidateDestination(item.Target);
                     attempted.Add(item); // A failed overwrite may still have modified the target.
                     File.Copy(item.Staged, item.Target, true);
@@ -164,6 +210,7 @@ namespace EverQuestBetaUiCopier
                     CopyItem item = attempted[i];
                     try
                     {
+                        if (item.IsMap) ValidateMapsDirectory(mapsDirectory);
                         ValidateDestination(item.Target);
                         if (item.Existed)
                         {
@@ -179,7 +226,20 @@ namespace EverQuestBetaUiCopier
                     }
                     catch (Exception rollbackFailure)
                     {
-                        rollbackErrors.Add(Path.GetFileName(item.Target) + ": " + rollbackFailure.Message);
+                        rollbackErrors.Add(item.RelativeTarget + ": " + rollbackFailure.Message);
+                    }
+                }
+                if (createdMapsDirectory)
+                {
+                    try
+                    {
+                        ValidateMapsDirectory(mapsDirectory);
+                        if (Directory.Exists(mapsDirectory) && Directory.GetFileSystemEntries(mapsDirectory).Length == 0)
+                            Directory.Delete(mapsDirectory, false);
+                    }
+                    catch (Exception cleanupFailure)
+                    {
+                        rollbackErrors.Add("maps folder: " + cleanupFailure.Message);
                     }
                 }
                 string state = rollbackErrors.Count == 0
@@ -203,6 +263,8 @@ namespace EverQuestBetaUiCopier
             return new TransferResult
             {
                 CopiedFiles = plan.Count,
+                CopiedUiFiles = plan.Count(p => !p.IsMap),
+                CopiedMapFiles = plan.Count(p => p.IsMap),
                 ReplacedFiles = plan.Count(p => p.Existed),
                 BackupDirectory = run
             };
@@ -212,7 +274,7 @@ namespace EverQuestBetaUiCopier
         {
             if (!destinations.Add(destinationName))
                 throw new InvalidOperationException("More than one selected profile would become " + destinationName + ". Select only one Live server for that character and class.");
-            plan.Add(new CopyItem { Source = source, Target = Path.Combine(beta, destinationName) });
+            plan.Add(new CopyItem { Source = source, Target = Path.Combine(beta, destinationName), RelativeTarget = destinationName });
         }
 
         private static string ExistingDirectory(string path, string label)
@@ -270,6 +332,21 @@ namespace EverQuestBetaUiCopier
             }
         }
 
+        private static void ValidateMapsDirectory(string path)
+        {
+            // Inspect attributes directly so dangling links are rejected as well.
+            try
+            {
+                FileAttributes attributes = File.GetAttributes(path);
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("The Beta maps folder is a link or reparse point and cannot be used safely: " + path);
+                if ((attributes & FileAttributes.Directory) == 0)
+                    throw new IOException("A file occupies the Beta maps folder: " + path);
+            }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
+        }
+
         private static void RejectReparsePoint(string path, string label)
         {
             if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
@@ -311,12 +388,17 @@ namespace EverQuestBetaUiCopier
             content.AppendLine("Live: " + live);
             content.AppendLine("Beta: " + beta);
             content.AppendLine("INI contents are copied unchanged; only the server segment of each filename becomes beta.");
+            if (plan.Any(p => p.IsMap))
+            {
+                content.AppendLine("Maps source: " + MapDownloader.ArchiveUrl);
+                content.AppendLine("Downloaded map filenames and contents are copied unchanged into the Beta maps folder.");
+            }
             content.AppendLine();
             foreach (CopyItem item in plan)
-                content.AppendLine(Path.GetFileName(item.Source) + " -> " + Path.GetFileName(item.Target) +
+                content.AppendLine((item.IsMap ? "GitHub maps/" + Path.GetFileName(item.Target) : Path.GetFileName(item.Source)) + " -> " + item.RelativeTarget +
                     (item.Backup != null ? " | existing Beta file backed up in originals" : " | new Beta file"));
             content.AppendLine();
-            content.AppendLine("To restore after a successful transfer: close Beta, copy files from originals into the Beta folder, and remove any listed new Beta files if you want to undo those additions.");
+            content.AppendLine("To restore after a successful transfer: close Beta, copy the contents of originals into the Beta folder preserving subfolders (originals/maps goes to Beta/maps), and remove any listed new Beta files if you want to undo those additions.");
             File.WriteAllText(path, content.ToString(), new UTF8Encoding(true));
         }
 
@@ -338,6 +420,9 @@ namespace EverQuestBetaUiCopier
         {
             internal string Source;
             internal string Target;
+            internal string RelativeTarget;
+            internal byte[] DownloadedContents;
+            internal bool IsMap { get { return DownloadedContents != null; } }
             internal string Staged;
             internal string Backup;
             internal bool Existed;

@@ -21,6 +21,9 @@ namespace EverQuestBetaUiCopier
                 using (CopierForm form = new CopierForm())
                 {
                     Require(!Field<Button>(form, "copyButton").Enabled, "Copy starts disabled");
+                    CheckBox maps = Field<CheckBox>(form, "includeMaps");
+                    Require(maps.Checked, "Include New Maps is checked by default");
+                    Require(maps.Text == "Include New Maps", "Maps option has the requested label");
                     SetField(form, "liveDirectory", "C:\\EverQuest\\Live");
                     SetField(form, "betaDirectory", "C:\\EverQuest\\Beta");
                     Field<TextBox>(form, "livePath").Text = "C:\\EverQuest\\Live";
@@ -37,7 +40,11 @@ namespace EverQuestBetaUiCopier
                     Require(Convert.ToBoolean(grid.Rows[0].Cells[0].Value) && Convert.ToBoolean(grid.Rows[1].Cells[0].Value), "Unique profiles selected");
                     Require(!Convert.ToBoolean(grid.Rows[2].Cells[0].Value) && !Convert.ToBoolean(grid.Rows[3].Cells[0].Value), "Conflicting profiles unselected");
                     Require(Field<Button>(form, "copyButton").Enabled, "Valid selection enables copying");
-                    Require(Field<Button>(form, "copyButton").Text == "Copy 3 files to Beta", "UI-only profiles count as one file");
+                    Require(Field<Button>(form, "copyButton").Text == "Copy 3 files + maps to Beta", "Copy button includes the maps option");
+                    maps.Checked = false;
+                    Require(Field<Button>(form, "copyButton").Text == "Copy 3 files to Beta", "Unchecking maps restores UI-only copy");
+                    Require(Field<Button>(form, "copyButton").Enabled, "UI-only copy remains available");
+                    maps.Checked = true;
                     Require(Field<Label>(form, "result").Text.Contains("Highlighted"), "Conflict instructions visible");
 
                     Invoke(form, "SetSelection", true);
@@ -64,7 +71,7 @@ namespace EverQuestBetaUiCopier
                             canvas.PerformLayout();
                             Require(grid.Height > 100, "Profile list has usable height");
                             Render(canvas, Path.Combine(output, "copier-preview.png"));
-                            canvas.Size = new Size(784, 651);
+                            canvas.Size = new Size(784, 683);
                             canvas.PerformLayout();
                             Require(grid.Height > 80, "Profile list fits minimum size");
                             Render(canvas, Path.Combine(output, "copier-preview-small.png"));
